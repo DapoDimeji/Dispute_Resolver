@@ -10,6 +10,8 @@
     network: "local",
     endpoint: "http://localhost:4000/api",
     contractAddress: "0x976De90EDD30807e5c03B7e310dD7d0DF89dc672",
+    txFinalizeTimeoutMs: 180000,
+    txPollIntervalMs: 1500,
   };
 
   let clientPromise = null;
@@ -90,6 +92,12 @@
     throw new Error("SDK client does not expose client.contract(address)");
   }
 
+  function assertContractMethod(contract, methodName) {
+    if (!contract || typeof contract[methodName] !== "function") {
+      throw new Error("Contract method not available: " + methodName);
+    }
+  }
+
   function pickTxHash(value) {
     if (!value) return null;
     if (typeof value === "string" && value.startsWith("0x")) return value;
@@ -118,6 +126,7 @@
 
   async function waitFinalized(client, txHash) {
     if (!txHash) return null;
+    const startedAt = Date.now();
 
     if (typeof client.waitForTransactionReceipt === "function") {
       const receipt = await client.waitForTransactionReceipt({
@@ -130,6 +139,9 @@
 
     if (typeof client.getTransactionReceipt === "function") {
       for (;;) {
+        if (Date.now() - startedAt > CONFIG.txFinalizeTimeoutMs) {
+          throw new Error("Transaction not FINALIZED yet. Please retry shortly.");
+        }
         const receipt = await client.getTransactionReceipt({
           txId: txHash,
           hash: txHash,
@@ -139,18 +151,21 @@
           (receipt && (receipt.status || receipt.state || receipt.consensus_status)) || ""
         ).toUpperCase();
         if (status === "FINALIZED") return normalizeReceipt(txHash, receipt);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, CONFIG.txPollIntervalMs));
       }
     }
 
     if (typeof client.getTransaction === "function") {
       for (;;) {
+        if (Date.now() - startedAt > CONFIG.txFinalizeTimeoutMs) {
+          throw new Error("Transaction not FINALIZED yet. Please retry shortly.");
+        }
         const tx = await client.getTransaction({ hash: txHash, transaction_hash: txHash });
         const status = String(
           (tx && (tx.status || tx.state || tx.consensus_status)) || ""
         ).toUpperCase();
         if (status === "FINALIZED") return normalizeReceipt(txHash, tx);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await new Promise((resolve) => setTimeout(resolve, CONFIG.txPollIntervalMs));
       }
     }
 
@@ -159,10 +174,8 @@
 
   async function callMethod(methodName, args) {
     const contract = await getContract();
-    const fn = contract && contract[methodName];
-    if (typeof fn !== "function") {
-      throw new Error("Contract method not available: " + methodName);
-    }
+    assertContractMethod(contract, methodName);
+    const fn = contract[methodName];
     return await fn(...(args || []));
   }
 
@@ -175,7 +188,7 @@
     return receipt || result;
   }
 
-  window.GenLayerContract = {
+  const bridge = {
     async get_all_disputes() {
       return await callMethod("get_all_disputes", []);
     },
@@ -232,7 +245,23 @@
     },
   };
 
-  window.glClient = window.GenLayerContract;
+  // Verify required methods once, so app errors early and explicitly.
+  const requiredMethods = [
+    "get_all_disputes",
+    "get_dispute",
+    "stake_as_juror",
+    "create_dispute",
+    "cast_vote",
+    "get_transaction",
+  ];
+  for (const methodName of requiredMethods) {
+    if (typeof bridge[methodName] !== "function") {
+      throw new Error("Bridge missing required method: " + methodName);
+    }
+  }
+
+  window.GenLayerContract = bridge;
+  window.glClient = bridge;
   setNetworkBadge(CONFIG.network, "ok");
   console.log("GenLayer bridge ready:", CONFIG.network);
 })().catch(function (err) {
