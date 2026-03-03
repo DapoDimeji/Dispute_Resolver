@@ -71,7 +71,15 @@ If deploying on Vercel:
 1. Set project root to `Frontend`.
 2. Keep `api/` in the same root so `api/*.js` are serverless functions.
 3. Set the same environment variables as above.
-4. Add SPA rewrite to `index.html` for non-API routes.
+4. Set `GL_RPC_URL` to a public endpoint. Do not use `localhost` or `127.0.0.1`.
+5. Add SPA rewrite to `index.html` for non-API routes.
+
+Quick health check after deploy:
+- Open `https://YOUR_DOMAIN/api/health`
+- Expected response:
+  - `ok: true`
+  - `hasRpcUrl: true`
+  - `rpcUrlLooksLocal: false`
 
 ## 6. Production checklist
 

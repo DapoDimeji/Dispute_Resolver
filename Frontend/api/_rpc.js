@@ -3,6 +3,7 @@
 const DEFAULT_RPC_URL = "http://localhost:4000/api";
 const DEFAULT_RATE_LIMIT_PER_MIN = 120;
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const DEFAULT_RPC_TIMEOUT_MS = 12000;
 
 function parseList(value, fallback) {
   if (!value || typeof value !== "string") return fallback;
@@ -10,11 +11,24 @@ function parseList(value, fallback) {
 }
 
 async function postJson(url, body) {
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_RPC_TIMEOUT_MS);
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const msg = err && err.name === "AbortError"
+      ? `RPC request timed out after ${DEFAULT_RPC_TIMEOUT_MS}ms (${url})`
+      : `RPC fetch failed (${url}): ${err && err.message ? err.message : String(err)}`;
+    throw new Error(msg);
+  } finally {
+    clearTimeout(timeout);
+  }
   const payload = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     const message = payload && (payload.error || payload.message);
@@ -72,6 +86,47 @@ function getRpcConfig() {
       process.env.GL_TX_METHODS,
       ["get_transaction_receipt", "getTransactionReceipt", "get_transaction", "getTransaction"]
     ),
+  };
+}
+
+function isLikelyLocalUrl(url) {
+  if (!url) return false;
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(String(url));
+}
+
+function isServerlessRuntime() {
+  return Boolean(
+    process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.NETLIFY
+  );
+}
+
+function validateRpcConfig(cfg) {
+  const rpcUrl = String((cfg && cfg.rpcUrl) || "").trim();
+  if (!rpcUrl) {
+    throw new Error("Missing GL_RPC_URL. Set a reachable GenLayer RPC endpoint.");
+  }
+
+  if (!/^https?:\/\//i.test(rpcUrl)) {
+    throw new Error("Invalid GL_RPC_URL. It must start with http:// or https://");
+  }
+
+  if (isServerlessRuntime() && isLikelyLocalUrl(rpcUrl)) {
+    throw new Error(
+      "GL_RPC_URL points to localhost, which is unreachable from serverless runtime. Set GL_RPC_URL to a public RPC endpoint."
+    );
+  }
+}
+
+function getConfigDiagnostics(cfg) {
+  const rpcUrl = String((cfg && cfg.rpcUrl) || "");
+  return {
+    runtime: process.env.VERCEL ? "vercel" : (process.env.NETLIFY ? "netlify" : "unknown"),
+    hasRpcUrl: Boolean(rpcUrl),
+    rpcUrlLooksLocal: isLikelyLocalUrl(rpcUrl),
+    hasSigner: Boolean(process.env.GL_PRIVATE_KEY || process.env.GL_FROM),
+    hasWriteAuthToken: Boolean(process.env.GL_WRITE_AUTH_TOKEN),
   };
 }
 
@@ -150,6 +205,8 @@ module.exports = {
   callRpc,
   callRpcWithFallback,
   getRpcConfig,
+  validateRpcConfig,
+  getConfigDiagnostics,
   txStatusUpper,
   normalizeAddress,
   applyCors,

@@ -3,6 +3,7 @@
 const {
   callRpcWithFallback,
   getRpcConfig,
+  validateRpcConfig,
   normalizeAddress,
   applyCors,
   isPreflight,
@@ -38,6 +39,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    validateRpcConfig(cfg);
     const privateKey = process.env.GL_PRIVATE_KEY || "";
     const forwarded = cfg.trustClientFrom
       ? normalizeAddress(req.headers["x-gl-from"] || body.from || body.sender)

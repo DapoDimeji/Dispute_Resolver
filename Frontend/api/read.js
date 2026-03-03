@@ -3,6 +3,7 @@
 const {
   callRpcWithFallback,
   getRpcConfig,
+  validateRpcConfig,
   applyCors,
   isPreflight,
   enforceRateLimit,
@@ -31,6 +32,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    validateRpcConfig(cfg);
     const result = await callRpcWithFallback(cfg.rpcUrl, cfg.readMethods, () => ({
       address: contractAddress,
       functionName,

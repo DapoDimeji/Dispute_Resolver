@@ -3,6 +3,7 @@
 const {
   callRpcWithFallback,
   getRpcConfig,
+  validateRpcConfig,
   applyCors,
   isPreflight,
   enforceRateLimit,
@@ -29,6 +30,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    validateRpcConfig(cfg);
     const result = await callRpcWithFallback(cfg.rpcUrl, cfg.txMethods, (methodName) => {
       if (methodName === "get_transaction" || methodName === "getTransaction") {
         return { hash: txHash, transaction_hash: txHash };
