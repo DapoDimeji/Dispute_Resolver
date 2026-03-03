@@ -136,7 +136,7 @@
 
   <!-- Footer -->
   <footer>
-    <div>Dispute Resolver Demo — Simulation mode active</div>
+    <div>Dispute Resolver — API proxy mode</div>
     <div class="powered">
       <div class="powered-dot"></div>
       Powered by <strong style="color:var(--primary)">GenLayer</strong> · Decentralized Intelligence
@@ -146,9 +146,18 @@
   <!-- Toast notification container -->
   <div id="toastContainer" style="position:fixed;top:24px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:10px;max-width:380px"></div>
 
-  <!-- GenLayer SDK (place browser bundle at Frontend/genlayer-sdk.js) -->
-  <script src="genlayer-sdk.js"></script>
-  <!-- GenLayer bridge (expects GenLayer SDK to be loaded globally) -->
+  <!-- Runtime config for no-SDK mode -->
+  <script>
+    window.__GL_CONFIG = window.__GL_CONFIG || {
+      contractAddress: "0x976De90EDD30807e5c03B7e310dD7d0DF89dc672",
+      apiBase: "/api",
+      networkLabel: "production-proxy",
+      // Optional hardening:
+      // writeAuthToken: "",
+      // forwardSender: false
+    };
+  </script>
+  <!-- GenLayer bridge (uses backend API proxy; no browser SDK required) -->
   <script src="genlayer-bridge.js"></script>
   <!-- App JS -->
   <script src="app.js"></script>

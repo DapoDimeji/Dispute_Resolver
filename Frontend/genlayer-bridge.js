@@ -1,21 +1,24 @@
 /*
-  GenLayer Bridge
-  Connects browser app to deployed contract (testnet/local configurable)
+  GenLayer Bridge (No Browser SDK)
+  Uses backend API proxy endpoints under /api/*.
 */
 
-(function () {
+(async function () {
   if (window.GenLayerContract) return;
 
+  const runtimeConfig = window.__GL_CONFIG || {};
+  const contractMeta = document.querySelector('meta[name="gl-contract-address"]');
+
   const CONFIG = {
-    network: "local",
-    endpoint: "http://localhost:4000/api",
-    contractAddress: "0x976De90EDD30807e5c03B7e310dD7d0DF89dc672",
+    networkLabel: runtimeConfig.networkLabel || "proxy",
+    contractAddress: runtimeConfig.contractAddress || (contractMeta ? contractMeta.content : ""),
+    apiBase: runtimeConfig.apiBase || "/api",
+    writeAuthToken: runtimeConfig.writeAuthToken || "",
+    forwardSender: Boolean(runtimeConfig.forwardSender),
     txFinalizeTimeoutMs: 180000,
     txPollIntervalMs: 1500,
   };
-
-  let clientPromise = null;
-  let contractPromise = null;
+  let currentSender = null;
 
   function setNetworkBadge(text, state) {
     const nameEl = document.getElementById("networkName");
@@ -27,75 +30,27 @@
     }
   }
 
-  function pickFactory() {
-    if (window.GenLayer && typeof window.GenLayer.create === "function") {
-      return { type: "genlayer-create", fn: window.GenLayer.create.bind(window.GenLayer) };
+  async function apiPost(path, body) {
+    const headers = { "Content-Type": "application/json" };
+    if (CONFIG.writeAuthToken) {
+      headers.Authorization = "Bearer " + CONFIG.writeAuthToken;
+    }
+    if (CONFIG.forwardSender && currentSender) {
+      headers["x-gl-from"] = currentSender;
     }
 
-    if (typeof window.createClient === "function") {
-      return { type: "create-client", fn: window.createClient };
+    const resp = await fetch(path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body || {}),
+    });
+
+    const payload = await resp.json().catch(function () { return {}; });
+    if (!resp.ok || (payload && payload.error)) {
+      const message = (payload && payload.error) || ("Request failed: " + resp.status);
+      throw new Error(message);
     }
-
-    if (window.genlayer && typeof window.genlayer.createClient === "function") {
-      return { type: "create-client", fn: window.genlayer.createClient.bind(window.genlayer) };
-    }
-
-    if (window.GenLayer && typeof window.GenLayer.createClient === "function") {
-      return { type: "create-client", fn: window.GenLayer.createClient.bind(window.GenLayer) };
-    }
-
-    return null;
-  }
-
-  async function createClientFromFactory(factory) {
-    if (factory.type === "genlayer-create") {
-      try {
-        return await factory.fn({ network: CONFIG.network, url: CONFIG.endpoint });
-      } catch (_) {
-        try {
-          return await factory.fn({ network: CONFIG.network });
-        } catch (__ ) {
-          return await factory.fn({ endpoint: CONFIG.endpoint });
-        }
-      }
-    }
-
-    try {
-      return await factory.fn({ endpoint: CONFIG.endpoint, network: CONFIG.network });
-    } catch (_) {
-      return await factory.fn({ endpoint: CONFIG.endpoint });
-    }
-  }
-
-  async function getClient() {
-    if (clientPromise) return clientPromise;
-
-    const factory = pickFactory();
-    if (!factory) {
-      throw new Error("GenLayer SDK not loaded. Add a browser SDK bundle before genlayer-bridge.js.");
-    }
-
-    clientPromise = createClientFromFactory(factory);
-    return clientPromise;
-  }
-
-  async function getContract() {
-    if (contractPromise) return contractPromise;
-
-    const client = await getClient();
-
-    if (typeof client.contract === "function") {
-      contractPromise = client.contract(CONFIG.contractAddress);
-      return contractPromise;
-    }
-
-    throw new Error("SDK client does not expose client.contract(address)");
-  }
-
-  function assertContractMethod(contract, methodName) {
-    if (!contract || typeof contract[methodName] !== "function") {
-      throw new Error("Contract method not available: " + methodName);
-    }
+    return payload.result;
   }
 
   function pickTxHash(value) {
@@ -124,146 +79,118 @@
     };
   }
 
-  async function waitFinalized(client, txHash) {
+  async function waitFinalized(txHash) {
     if (!txHash) return null;
     const startedAt = Date.now();
 
-    if (typeof client.waitForTransactionReceipt === "function") {
-      const receipt = await client.waitForTransactionReceipt({
-        transaction_hash: txHash,
-        hash: txHash,
-        status: "FINALIZED",
-      });
-      return normalizeReceipt(txHash, receipt);
-    }
-
-    if (typeof client.getTransactionReceipt === "function") {
-      for (;;) {
-        if (Date.now() - startedAt > CONFIG.txFinalizeTimeoutMs) {
-          throw new Error("Transaction not FINALIZED yet. Please retry shortly.");
-        }
-        const receipt = await client.getTransactionReceipt({
-          txId: txHash,
-          hash: txHash,
-          transaction_hash: txHash,
-        });
-        const status = String(
-          (receipt && (receipt.status || receipt.state || receipt.consensus_status)) || ""
-        ).toUpperCase();
-        if (status === "FINALIZED") return normalizeReceipt(txHash, receipt);
-        await new Promise((resolve) => setTimeout(resolve, CONFIG.txPollIntervalMs));
+    while (Date.now() - startedAt < CONFIG.txFinalizeTimeoutMs) {
+      const tx = await apiPost(CONFIG.apiBase + "/tx", { txHash: txHash });
+      const status = String(
+        (tx && (tx.status || tx.state || tx.consensus_status)) || ""
+      ).toUpperCase();
+      if (status === "FINALIZED") {
+        return normalizeReceipt(txHash, tx);
       }
+      await new Promise(function (resolve) { setTimeout(resolve, CONFIG.txPollIntervalMs); });
     }
 
-    if (typeof client.getTransaction === "function") {
-      for (;;) {
-        if (Date.now() - startedAt > CONFIG.txFinalizeTimeoutMs) {
-          throw new Error("Transaction not FINALIZED yet. Please retry shortly.");
-        }
-        const tx = await client.getTransaction({ hash: txHash, transaction_hash: txHash });
-        const status = String(
-          (tx && (tx.status || tx.state || tx.consensus_status)) || ""
-        ).toUpperCase();
-        if (status === "FINALIZED") return normalizeReceipt(txHash, tx);
-        await new Promise((resolve) => setTimeout(resolve, CONFIG.txPollIntervalMs));
-      }
-    }
-
-    return { transaction_hash: txHash, status: "ACCEPTED", raw: null };
+    throw new Error("Transaction not FINALIZED yet. Please retry shortly.");
   }
 
-  async function callMethod(methodName, args) {
-    const contract = await getContract();
-    assertContractMethod(contract, methodName);
-    const fn = contract[methodName];
-    return await fn(...(args || []));
+  async function readMethod(functionName, args) {
+    return await apiPost(CONFIG.apiBase + "/read", {
+      contractAddress: CONFIG.contractAddress,
+      functionName: functionName,
+      args: args || [],
+    });
   }
 
-  async function writeMethod(methodName, args) {
-    const client = await getClient();
-    const result = await callMethod(methodName, args);
+  async function writeMethod(functionName, args) {
+    const result = await apiPost(CONFIG.apiBase + "/write", {
+      contractAddress: CONFIG.contractAddress,
+      functionName: functionName,
+      args: args || [],
+      value: 0,
+    });
+
     const txHash = pickTxHash(result);
     if (!txHash) return result;
-    const receipt = await waitFinalized(client, txHash);
+    const receipt = await waitFinalized(txHash);
     return receipt || result;
   }
 
+  function normalizeAddress(a) {
+    if (!a) return null;
+    const raw = String(a).toLowerCase();
+    const prefixed = raw.startsWith("0x") ? raw : ("0x" + raw);
+    return /^0x[a-f0-9]{40}$/.test(prefixed) ? prefixed : null;
+  }
+
+  function setSender(sender) {
+    const normalized = normalizeAddress(sender);
+    if (normalized) currentSender = normalized;
+  }
+
   const bridge = {
-    async get_all_disputes() {
-      return await callMethod("get_all_disputes", []);
+    async get_all_disputes(_args, sender) {
+      setSender(sender);
+      return await readMethod("get_all_disputes", []);
     },
 
-    async get_dispute(arg) {
+    async get_dispute(arg, sender) {
+      setSender(sender);
       const disputeId = typeof arg === "object" && arg ? arg.dispute_id : arg;
-      return await callMethod("get_dispute", [disputeId]);
+      return await readMethod("get_dispute", [disputeId]);
     },
 
-    async initialize() {
+    async initialize(_args, sender) {
+      setSender(sender);
       return await writeMethod("initialize", []);
     },
 
-    async deposit(args) {
+    async deposit(args, sender) {
+      setSender(sender);
       const amount = args && typeof args === "object" ? Number(args.amount) : Number(args);
       return await writeMethod("deposit", [amount]);
     },
 
-    async stake_as_juror(args) {
+    async stake_as_juror(args, sender) {
+      setSender(sender);
       const amount = args && typeof args === "object" ? Number(args.amount) : Number(args);
       return await writeMethod("stake_as_juror", [amount]);
     },
 
-    async create_dispute(args) {
+    async create_dispute(args, sender) {
+      setSender(sender);
       const description = args && typeof args === "object" ? String(args.description || "") : "";
       const stake = args && typeof args === "object" ? Number(args.stake || 0) : 0;
       return await writeMethod("create_dispute", [description, stake]);
     },
 
-    async cast_vote(args) {
+    async cast_vote(args, sender) {
+      setSender(sender);
       const disputeId = String(args && args.dispute_id ? args.dispute_id : "");
       const vote = String(args && args.vote ? args.vote : "");
       return await writeMethod("cast_vote", [disputeId, vote]);
     },
 
-    async get_transaction(txHash) {
-      const client = await getClient();
-
-      if (typeof client.getTransactionReceipt === "function") {
-        const receipt = await client.getTransactionReceipt({
-          txId: txHash,
-          hash: txHash,
-          transaction_hash: txHash,
-        });
-        return normalizeReceipt(txHash, receipt);
-      }
-
-      if (typeof client.getTransaction === "function") {
-        const tx = await client.getTransaction({ hash: txHash, transaction_hash: txHash });
-        return normalizeReceipt(txHash, tx);
-      }
-
-      return { transaction_hash: txHash, status: "ACCEPTED", raw: null };
+    async get_transaction(txHash, sender) {
+      setSender(sender);
+      const tx = await apiPost(CONFIG.apiBase + "/tx", { txHash: txHash });
+      return normalizeReceipt(txHash, tx);
     },
   };
 
-  // Verify required methods once, so app errors early and explicitly.
-  const requiredMethods = [
-    "get_all_disputes",
-    "get_dispute",
-    "stake_as_juror",
-    "create_dispute",
-    "cast_vote",
-    "get_transaction",
-  ];
-  for (const methodName of requiredMethods) {
-    if (typeof bridge[methodName] !== "function") {
-      throw new Error("Bridge missing required method: " + methodName);
-    }
+  if (!CONFIG.contractAddress) {
+    throw new Error(
+      "Missing contract address. Set window.__GL_CONFIG.contractAddress or meta[name='gl-contract-address']."
+    );
   }
 
   window.GenLayerContract = bridge;
   window.glClient = bridge;
-  setNetworkBadge(CONFIG.network, "ok");
-  console.log("GenLayer bridge ready:", CONFIG.network);
+  setNetworkBadge(CONFIG.networkLabel, "ok");
+  console.log("GenLayer bridge ready:", CONFIG.networkLabel);
 })().catch(function (err) {
   const nameEl = document.getElementById("networkName");
   const dotEl = document.getElementById("networkDot");

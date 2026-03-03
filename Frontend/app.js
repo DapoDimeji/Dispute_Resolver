@@ -310,7 +310,7 @@ function startPolling() {
 document.addEventListener('DOMContentLoaded', () => {
   GL = resolveClient();
   if (!GL) {
-    showToast('GenLayer SDK not loaded.', 'error', 0);
+    showToast('GenLayer bridge not initialized. Check proxy config and contract address.', 'error', 0);
     return;
   }
 
